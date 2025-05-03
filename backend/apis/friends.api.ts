@@ -1,201 +1,181 @@
-import express from "express";
-import { v4 as uuidv4 } from "uuid";
 import { Router } from "express";
-import { Server as SocketIOServer } from "socket.io";
+import { Server } from "socket.io";
+import rateLimit from "express-rate-limit";
+import logger from "../logger";
+import {
+    sendFriendRequest,
+    getFriendRequestById,
+    updateFriendRequestStatus,
+    unfriendUser,
+    followUser,
+    unfollowUser,
+} from "../services/friends.service";
+import { Convert } from "../services/user.service";
+import { v4 as uuidv4, validate as isUUID } from "uuid";
 
-// Dummy user data
+const router = Router();
 
-const users = {
-    alice: { studentID: "stu001" },
-    bob: { studentID: "stu002" },
-    charlie: { studentID: "stu003" },
-    dave: { studentID: "stu004" },
-};
+export default function friendsApiRouter(io: Server) {
+    router.use(
+        rateLimit({
+            windowMs: 15 * 60 * 1000,
+            max: 10,
+            message: "Too many friend request actions. Please try again later.",
+        })
+    );
 
-type FriendRequest = {
-    requestID: string;
-    sender: string;
-    receiver: string;
-    status: "pending" | "accepted" | "declined";
-    studentID: string; // sender's student ID
-};
-
-// In-memory friend request list
-const friendRequests: FriendRequest[] = [];
-
-// Simulated logged-in user
-let loggedInUsername = "alice"; // You can replace this with real session user
-
-export default function friendsApiRouter( io: SocketIOServer) {
-    const router = Router();
-
-    /**
-     * Send a friend request
-     * @route GET /api/friends/send/:username
-     */
-    router.get("/api/friends/send/:username", (req, res: any) => {
-        const sender = loggedInUsername;
-        const receiver = req.params.username;
-
-        if (!users[receiver]) {
-            return res.status(404).json({ ok: false, message: "Receiver not found" });
-        }
-
-        if (sender === receiver) {
-            return res
-                .status(400)
-                .json({ ok: false, message: "Cannot send request to yourself" });
-        }
-
-        const alreadySent = friendRequests.some(
-            (request) =>
-                request.sender === sender &&
-                request.receiver === receiver &&
-                request.status === "pending"
-        );
-
-        if (alreadySent) {
-            return res
-                .status(409)
-                .json({ ok: false, message: "Friend request already pending" });
-        }
-
-        const requestID = uuidv4();
-        const newRequest: FriendRequest = {
-            requestID,
-            sender,
-            receiver,
-            status: "pending",
-            studentID: users[sender].studentID,
-        };
-
-        friendRequests.push(newRequest);
-
-        return res.status(200).json({
-            ok: true,
-            message: "Friend request sent",
-            requestID,
-            request: newRequest,
-        });
-    });
-
-    /**
-     * Accept a friend request
-     * @route GET /api/friends/:requestID/accept
-     */
-    router.get("/api/friends/:requestID/accept", (req, res: any) => {
-        const { requestID } = req.params;
-        const receiver = loggedInUsername;
-
-        const request = friendRequests.find(
-            (r) => r.requestID === requestID && r.receiver === receiver
-        );
-
-        if (!request) {
-            return res
-                .status(404)
-                .json({ ok: false, message: "Request not found or not authorized" });
-        }
-
-        if (request.status !== "pending") {
-            return res
-                .status(400)
-                .json({
-                    ok: false,
-                    message: `Cannot accept. Already ${request.status}.`,
-                });
-        }
-
-        request.status = "accepted";
-
-        return res
-            .status(200)
-            .json({ ok: true, message: "Friend request accepted", request });
-    });
-
-    /**
-     * Decline a friend request
-     * @route GET /api/friends/:requestID/decline
-     */
-    router.get("/api/friends/:requestID/decline", (req, res: any) => {
-        const { requestID } = req.params;
-        const receiver = loggedInUsername;
-
-        const request = friendRequests.find(
-            (r) => r.requestID === requestID && r.receiver === receiver
-        );
-
-        if (!request) {
-            return res
-                .status(404)
-                .json({ ok: false, message: "Request not found or not authorized" });
-        }
-
-        if (request.status !== "pending") {
-            return res
-                .status(400)
-                .json({
-                    ok: false,
-                    message: `Cannot decline. Already ${request.status}.`,
-                });
-        }
-
-        request.status = "declined";
-
-        return res
-            .status(200)
-            .json({ ok: true, message: "Friend request declined", request });
-    });
-
-    //follow a user
-
-    // Simulate in-memory/mock data
-
-    let testUserDatabase = {
-        receiver: {
-            username: "john_doe",
-            followers: ["u001", "u002"], // userIds following john_doe
-        },
-        sender: {
-            userId: "u003",
-            followings: [], // whom u003 is following
-        },
+    const getUserIDs = async (studentID: string, username: string) => {
+        const sender = await Convert.getDocumentID_studentid(studentID);
+        const receiver = await Convert.getDocumentID_username(username);
+        return { sender, receiver };
     };
 
-    // Follow API (GET method)
-    router.get("/follow/:username", (req, res: any) => {
+    const logAndRespond = (res, level, message, meta = {}) => {
+        logger[level](message, meta);
+        return res.json({ ok: false, message });
+    };
+
+    router.get("/send/:username", async (req, res) => {
+        const senderID = req.session?.["stdid"];
         const receiverUsername = req.params.username;
-        const senderId =
-            typeof req.query.senderId === "string" ? req.query.senderId : "u003"; // fallback default
 
-        // Fetch test objects (simulated data)
-        const receiver = testUserDatabase.receiver;
-        const sender = testUserDatabase.sender;
+        if (!senderID) return
 
-        // Check if receiver exists
-        if (receiver.username !== receiverUsername) {
-            return res.status(404).json({ message: "Receiver not found." });
+        try {
+            const senderUsername = await Convert.getUserName_studentid(senderID);
+            if (!senderUsername)
+                return logAndRespond(res, "error", "Invalid sender username", { senderID });
+
+            if (senderUsername === receiverUsername)
+                return logAndRespond(res, "warn", "Cannot send request to yourself");
+
+            const { sender, receiver } = await getUserIDs(senderID, receiverUsername);
+
+            if (!sender || !receiver)
+                return logAndRespond(res, "error", "Invalid sender or receiver", {
+                    senderID,
+                    receiverUsername,
+                });
+
+            const requestID = uuidv4();
+            const result = await sendFriendRequest({
+                senderDocID: sender,
+                receiverDocID: receiver,
+                requestID,
+                status: "pending",
+            });
+
+            if (!result.ok)
+                return logAndRespond(res, "error", "Failed to send friend request", result);
+
+            logger.info("Friend request sent", { from: sender, to: receiverUsername });
+            return res.status(200).json({ ok: true, message: "Friend request sent", requestID });
+        } catch (err) {
+            return logAndRespond(res, "error", "Internal error sending friend request", { err });
         }
-
-        // Check if already followed (mock logic)
-        const alreadyFollowing = receiver.followers.includes(senderId);
-
-        if (alreadyFollowing) {
-            return res
-                .status(200)
-                .json({ message: "Already following", followState: "following" });
-        }
-
-        // Simulate follow logic by updating mock objects
-        receiver.followers.push(senderId);
-        sender.followings.push(receiver.username);
-
-        return res.status(200).json({
-            message: `Follow request sent to ${receiver.username}`,
-            followState: "following",
-            testReceiverObject: receiver,
-            testSenderObject: sender,
-        });
     });
+
+    router.get("/:requestID", async (req, res) => {
+        const studentID = req.session?.["stdid"];
+        const { requestID } = req.params;
+        const action = req.query.action as string;
+
+        if (!studentID) return
+
+        if (!isUUID(requestID))
+            return logAndRespond(res, "warn", "Invalid request ID format", { requestID });
+
+        try {
+            const currentUser = await Convert.getDocumentID_studentid(studentID);
+            if (!currentUser) return logAndRespond(res, "warn", "Student not found", { studentID });
+
+            const { ok, request, receiverInfo } = await getFriendRequestById(requestID);
+            if (!ok || !request) return logAndRespond(res, "warn", "Request not found", { requestID });
+
+            const isParticipant =
+                request.senderDocID._id.toString() === currentUser.toString() ||
+                request.receiverDocID._id.toString() === currentUser.toString();
+
+            if (["accept", "decline"].includes(action)) {
+                if (receiverInfo !== studentID)
+                    return logAndRespond(res, "warn", "Unauthorized to respond to request", { studentID });
+
+                if (request.status !== "pending")
+                    return logAndRespond(res, "info", `Cannot ${action}. Already ${request.status}`);
+
+                const updateResult = await updateFriendRequestStatus(
+                    requestID,
+                    action === "accept" ? "accepted" : "declined"
+                );
+                if (!updateResult.ok)
+                    return logAndRespond(res, "error", `Failed to ${action}`, updateResult);
+
+                logger.info(`Friend request ${action}ed`, { requestID, studentID });
+                return res.status(200).json({ ok: true, message: `Request ${action}d` });
+            }
+
+            if (action === "unfriend") {
+                if (request.status !== "accepted")
+                    return logAndRespond(res, "info", "Users are not friends yet");
+
+                if (!isParticipant)
+                    return logAndRespond(res, "warn", "Not part of this friendship", {
+                        requestID,
+                        currentUser,
+                    });
+
+                const unfriendResult = await unfriendUser(requestID);
+                if (!unfriendResult.ok)
+                    return logAndRespond(res, "error", "Failed to unfriend", unfriendResult);
+
+                logger.info("Unfriended successfully", { requestID, currentUser });
+                return res.status(200).json({ ok: true, message: "Unfriended successfully" });
+            }
+
+            return logAndRespond(res, "warn", "Invalid action parameter", { action });
+        } catch (err) {
+            return logAndRespond(res, "error", "Unexpected error", { requestID, err });
+        }
+    });
+
+    router.get("/follow/:username", async (req, res) => {
+        const action = req.query.action;
+        const studentID = req.session?.["stdid"];
+        const receiverUsername = req.params.username;
+
+        if (!studentID) return
+
+        try {
+            const { sender, receiver } = await getUserIDs(studentID, receiverUsername);
+
+            if (!sender || !receiver)
+                return logAndRespond(res, "warn", "Student not found", { sender, receiver });
+
+            if (sender.toString() === receiver.toString())
+                return logAndRespond(res, "warn", "Cannot follow/unfollow yourself");
+
+            if (action === "follow") {
+                const followID = uuidv4();
+                const result = await followUser(followID, sender, receiver);
+                if (!result.ok) return logAndRespond(res, "error", "Failed to follow", result);
+
+                logger.info("Followed successfully", { sender, receiver });
+                return res.status(200).json({ ok: true, message: `Now following ${receiverUsername}` });
+            }
+
+            if (action === "unfollow") {
+                const result = await unfollowUser(sender, receiver);
+                if (!result.ok) return logAndRespond(res, "error", "Failed to unfollow", result);
+
+                logger.info("Unfollowed successfully", { sender, receiver });
+                return res.status(200).json({ ok: true, message: `Unfollowed ${receiverUsername}` });
+            }
+
+            return logAndRespond(res, "warn", "Invalid action", { action });
+        } catch (err) {
+            return logAndRespond(res, "error", "Unexpected follow error", { studentID, err });
+        }
+    });
+
     return router;
 }
