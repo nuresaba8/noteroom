@@ -20,7 +20,6 @@ import swaggerUi from 'swagger-ui-express';
 import swaggerSpec from './swaggers/swaggerOptions';
 
 import postApiRouter from './apis/post.api.js';
-import feedApiRouter from './apis/feed.api.js';
 import seacrhApiRouter from './apis/search.api.js';
 import profileApiRouter from './apis/profile.api.js';
 import notificationApiRouter from './apis/notifications.api.js';
@@ -98,7 +97,6 @@ app.use('/api/users', profileApiRouter(io))
 app.use('/api/posts', postApiRouter(io))
 app.use('/api/notifications', notificationApiRouter(io))
 app.use('/api/requests', requestsApiRouter(io))
-app.use('/api/feed', feedApiRouter(io))
 app.use('/api/search', seacrhApiRouter(io))
 app.use('/api/auth', authApiRouter(io))
 app.use('/api/upload', uploadApiRouter(io))

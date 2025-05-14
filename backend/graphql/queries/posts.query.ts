@@ -37,7 +37,8 @@ const getPostsByPage = gql`
             description
             createdAt
             isPostOwner
-            content(startIndex: 0) {
+            #TODO: in feed, now 2 pictures are being fetched. Maybe can have a reddit like feature to see all the pictures in feed
+            content(startIndex: 0, count: 2) {
                 resources
                 totalContentCount
             }

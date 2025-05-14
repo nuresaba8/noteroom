@@ -4,7 +4,6 @@ import mongoose from "mongoose"
 import { isUpvoted } from "./vote.service"
 import { PostType } from "../schemas/posts.model"
 import { deleteFile } from "./firebase.service"
-import { Convert } from "./user.service"
 
 interface SavedNoteObject {
     noteID: string,
@@ -62,7 +61,7 @@ export async function isSaved(userDocID: string, postDocID: string) {
     })
     return document ? true : false
 }
-export async function getPosts(studentDocID: string, options?: any) {
+export async function getPosts(studentDocID: string, options?: { skip: number, limit: number, seed: number }) {
     /*
     Linear Congruential Generator (LCG):
         X_n+1 = (A * X_n + C) mod M
@@ -72,127 +71,145 @@ export async function getPosts(studentDocID: string, options?: any) {
         M = 2 ^ 32
         X_n = seed
     */
-    let notes = await Notes.aggregate([
-        { $match: { completed: { $eq: true }, visibility: "public", postType: PostType.CONTENT } },
-        {
-            $lookup: {
+    try {
+        const posts = await Notes.aggregate([
+            { $match: { completed: { $eq: true }, visibility: "public", postType: PostType.CONTENT } },
+            { $lookup: {
                 from: 'students',
                 localField: 'ownerDocID',
                 foreignField: '_id',
-                as: 'ownerDocID'
-            }
-        },
-        {
-            $addFields: {
+                as: 'owner'
+            } },
+            { $unwind: {
+                path: '$owner',
+            } },
+            { $addFields: {
+                viewerDocID: new mongoose.Types.ObjectId(studentDocID),
+            } },
+            { $lookup: {
+                from: 'students',
+                localField: 'viewerDocID',
+                foreignField: '_id',
+                as: 'viewer'
+            } },
+            { $unwind: {
+                path: '$viewer',
+            } },
+            { $addFields: {
                 A: { $add: ["$feedbackCount", 1234567] },
                 C: {
                     $add: [
                         { $multiply: [{ $add: ["$upvoteCount", 10] }, 9876543] },
                         { $multiply: [{ $add: [{ $size: "$content" }, 1] }, 22695477] }
                     ]
+                },
+                isPostOwner: {
+                    $cond: [
+                        { $eq: ["$ownerDocID", "$viewerDocID"] },
+                        true,
+                        false
+                    ]
+                },
+                interactionData: {
+                    feedbackCount: "$feedbackCount",
+                    upvoteCount: "$upvoteCount",
+                    isSaved: {
+                        $cond: [
+                            { $in: ["$_id", "$viewer.saved_notes"] },
+                            true,
+                            false
+                        ]
+                    }
                 }
-            }
-        },
-        {
-            $addFields: {
+            } },
+            { $addFields: {
                 randomSort: {
                     $mod: [
-                        { $add: [{ $multiply: ["$A", parseInt(options.seed)] }, "$C"] },
+                        { $add: [{ $multiply: ["$A", options.seed] }, "$C"] },
                         Math.pow(2, 32)
                     ]
-                }
-            }
-        },
-        {
-            $unwind: {
-                path: '$ownerDocID',
-            }
-        },
-        {
-            $project: {
-                title: 1, description: 1,
-                feedbackCount: 1, upvoteCount: 1,
-                postType: 1, content: 1, randomSort: 1,
-                createdAt: 1, pinned: 1, postID: 1,
-                "ownerDocID._id": 1,
-                "ownerDocID.profile_pic": 1,
-                "ownerDocID.displayname": 1,
-                "ownerDocID.studentID": 1,
-                "ownerDocID.username": 1
-            }
-        },
-        {
-            $addFields: {
-                isOwner: { $eq: ["$ownerDocID._id", new mongoose.Types.ObjectId(studentDocID)] }
-            }
-        },
-        { $sort: { pinned: -1, randomSort: 1 } },
-        { $skip: parseInt(options.skip) },
-        { $limit: parseInt(options.limit) }
-    ])
+                },
+            } },
+            { $project: {
+                content: 0
+            } },
+            { $sort: { randomSort: 1, _id: 1 } },
+            { $skip: options.skip },
+            { $limit: options.limit },
+        ])
 
-    let extentedNotes = await Promise.all(
-        notes.map(async (note: any) => {
-            // let isupvoted = await isUpVoted({ noteDocID: note["_id"].toString(), voterStudentDocID: studentDocID })
-            // let issaved = await isSaved({ noteDocID: note["_id"].toString(), studentDocID: studentDocID }) 
-            return { ...note, isUpvoted: true, isSaved: true }
-        })
-    )
-
-    return extentedNotes
+        const modifiedPosts = posts.length !== 0 && await Promise.all(posts.map(async post => {
+            const isPostUpvoted = await isUpvoted(post?.["_id"]?.toString(), studentDocID)
+            return { ...post, interactionData: { ...post?.interactionData, isUpvoted: isPostUpvoted } }
+        }))
+    
+        return { ok: true, posts: posts.length !== 0 ? modifiedPosts : [] }
+    } catch (error) {
+        return { ok: false, error: error }
+    }
 }
 
 
-//DEPRECATED
-export async function getSinglePost(postID: string, studentID: string) {
+export async function getSinglePost(postID: string, userDocID: string) {
     try {
-        let post = await Notes.aggregate([
-            { $match: { postID: postID } },
-            {
-                $lookup: {
-                    from: 'students',
-                    localField: 'ownerDocID',
-                    foreignField: '_id',
-                    as: 'ownerDocID'
+        const post = await Notes.aggregate([
+            { $match: { postID: postID, completed: true } },
+            { $lookup: {
+                from: "students",
+                localField: "ownerDocID",
+                foreignField: "_id",
+                as: "owner"
+            } },
+            { $unwind: {
+                path: "$owner"
+            } },
+            { $addFields: {
+                viewerDocID: new mongoose.Types.ObjectId(userDocID)
+            } },
+            { $lookup: {
+                from: "students",
+                localField: "viewerDocID",
+                foreignField: "_id",
+                as: "viewer"
+            } },
+            { $unwind: {
+                path: "$viewer"
+            } },
+            { $addFields: {
+                isPostOwner: {
+                    $cond: [
+                        { $eq: ["$ownerDocID", "$viewerDocID"] },
+                        true,
+                        false
+                    ]
+                },
+                interactionData: {
+                    feedbackCount: "$feedbackCount",
+                    upvoteCount: "$upvoteCount",
+                    isSaved: {
+                        $cond: [
+                            { $in: ["$_id", "$viewer.saved_notes"] },
+                            true,
+                            false
+                        ]
+                    },
                 }
-            },
-            {
-                $unwind: {
-                    path: "$ownerDocID"
-                }
-            },
-            {
-                $project: {
-                    title: 1, description: 1,
-                    feedbackCount: 1, upvoteCount: 1,
-                    postType: 1, content: 1,
-                    createdAt: 1, pinned: 1, postID: 1,
-                    "ownerDocID._id": 1,
-                    "ownerDocID.profile_pic": 1,
-                    "ownerDocID.displayname": 1,
-                    "ownerDocID.studentID": 1,
-                    "ownerDocID.username": 1
-                }
-            },
-            {
-                $addFields: {
-                    isOwner: { $eq: ["$ownerDocID.studentID", studentID] }
-                }
-            }
-        ]);
-
+            } },
+            { $project: {
+                content: 0,
+                "owner._id": 0,
+            } }
+        ])
+        
         if (post.length === 0) {
-            return { ok: false }
+            return { ok: false, code: "NO_POST" }
         }
-
-        const postDocID = post[0]._id.toString()
-        const userDocID = (await Convert.getDocumentID_studentid(studentID)).toString()
-        // const isPostSaved = await isSaved(userDocID, postDocID)
-        const isPostUpvoted = await isUpvoted(postDocID, userDocID)
-
-        return { ok: true, post: { ...post[0], isSaved: true, isUpvoted: isPostUpvoted } }
+        
+        const isPostUpvoted = await isUpvoted(post[0]?.["_id"]?.toString(), userDocID)
+        const modifiedPost = { ...post[0], interactionData: { ...post[0]?.interactionData, isUpvoted: isPostUpvoted } }
+        return { ok: true, post: modifiedPost }
     } catch (error) {
-        return { ok: false, error: error }
+        return { ok: false, error: error, code: "SERVER" }
     }
 }
 
