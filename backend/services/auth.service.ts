@@ -53,3 +53,28 @@ export async function addUserProfile(user: any) {
         return { ok: false, error: error }
     }
 }
+
+export async function forgetPassword(email: any) {
+    try {
+        const user = await Students.findOne({ email: email })
+
+        const resetToken = (user as any).generatePasswordResetToken();
+        user.save({ validateBeforeSave: false })
+
+        return { ok: true, resetToken, user }
+    } catch (error) {
+        return { ok: false, error: error }
+    }
+}
+
+export async function getUser(hashToken: any) {
+    try {
+        const user = await Students.findOne({
+            passwordResetToken: hashToken,
+            passwordResetExpires: { $gt: Date.now() }
+        })
+        return { ok: true, user }
+    } catch (error) {
+        return { ok: false, error: error }
+    }
+}

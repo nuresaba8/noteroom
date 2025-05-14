@@ -1,4 +1,5 @@
 import { Schema, model } from 'mongoose'
+import crypto from 'crypto'
 
 const studentsSchema = new Schema({
     profile_pic: {
@@ -154,7 +155,19 @@ const studentsSchema = new Schema({
             website: { link: null }
         })
     },
+    passwordResetToken: String,
+    passwordResetExpires: Date
 })
+
+studentsSchema.methods.generatePasswordResetToken = function () {
+    const resetToken = crypto.randomBytes(20).toString('hex');
+
+    this.passwordResetToken = crypto.createHash("sha256").update(resetToken).digest('hex');
+    this.passwordResetExpires = new Date(Date.now() + 10 * 60 * 1000);
+
+    return resetToken;
+}
+
 
 const studentsModel = model('students', studentsSchema)
 

@@ -1,12 +1,16 @@
 import { Router } from 'express';
 import { Server } from 'socket.io';
 import { OAuth2Client } from 'google-auth-library';
-import { addUserProfile, getUserAuth, getUserVarification } from '../services/auth.service';
+import { addUserProfile, getUserAuth, getUserVarification, forgetPassword, getUser } from '../services/auth.service';
 import { generateRandomUsername } from '../services/utils';
 import { capitalize, sample } from "lodash"
 import logger from '../logger';
+import nodemailer from 'nodemailer';
+import { join } from 'path'
+import { config } from 'dotenv';
+import crypto from 'crypto'
 
-
+config({ path: join(__dirname, '../.env') });
 
 const router = Router()
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
@@ -40,9 +44,9 @@ export default function authApiRouter(io: Server) {
                     const { data: user } = response
                     req.session["stdid"] = user["studentID"]
                     logger.info(`(/signup): Set session of username=${studentData.username || '--username--'}`)
-                    res.json({ ok: true, userAuth: { studentID: user["studentID"], username: user["username" ]} })
+                    res.json({ ok: true, userAuth: { studentID: user["studentID"], username: user["username"] } })
                 } else {
-                    if(response.error.code === 11000) {
+                    if (response.error.code === 11000) {
                         const { keyPattern, keyValue } = response.error
                         const fieldName = Object.keys(keyPattern)[0] as string
                         if (fieldName !== "username") {
@@ -74,11 +78,11 @@ export default function authApiRouter(io: Server) {
                 let response = await getUserVarification(email)
                 if (response.ok) {
                     const { data: student } = response
-                    if(student["authProvider"] === null) {
+                    if (student["authProvider"] === null) {
                         if (password === student['studentPass']) {
                             req.session["stdid"] = student["studentID"];
                             logger.info(`(/login): NoteRoom login with email=${email || '--email--'}`)
-                            res.json({ ok: true, userAuth: { studentID: student["studentID"], username: student["username"] }});
+                            res.json({ ok: true, userAuth: { studentID: student["studentID"], username: student["username"] } });
                         } else {
                             res.json({ ok: false, message: "Incorrect password. Try again" })
                         }
@@ -120,35 +124,35 @@ export default function authApiRouter(io: Server) {
             res.json({ ok: false });
         }
     })
-    
-    router.post('/google', async (req, res:any) => {
+
+    router.post('/google', async (req, res: any) => {
         try {
-            const { credential } = req.body; 
+            const { credential } = req.body;
             if (!credential) return
-    
+
             const ticket = await googleClient.verifyIdToken({
                 idToken: credential,
                 audience: GOOGLE_CLIENT_ID,
             });
-    
+
             const payload = ticket.getPayload();
             const email = payload.email;
             const displayName = payload.name;
-    
+
             logger.info(`(/auth/google): Google login attempt - email=${email}`);
-    
+
             const existingUser = await getUserVarification(email);
-    
+
             if (existingUser.ok) {
                 const student = existingUser.data;
-    
+
                 if (student.authProvider !== "google") {
                     return res.json({
                         ok: false,
                         message: "This email is registered with another method. Try NoteRoom login",
                     });
                 }
-    
+
                 req.session.regenerate(() => {
                     req.session["stdid"] = student["studentID"];
                     return res.json({
@@ -162,7 +166,7 @@ export default function authApiRouter(io: Server) {
 
                 return;
             }
-    
+
             const identifier = generateRandomUsername(displayName.trim());
             const newUser = {
                 displayname: displayName,
@@ -173,16 +177,16 @@ export default function authApiRouter(io: Server) {
                 authProvider: "google",
                 onboarded: false,
             };
-    
+
             const response = await addUserProfile(newUser);
-    
+
             if (response.ok) {
                 const user = response.data;
-    
+
                 req.session.regenerate(() => {
                     req.session["stdid"] = user["studentID"];
                     logger.info(`(/auth/google): Created & logged in user: ${email}`);
-    
+
                     res.json({
                         ok: true,
                         userAuth: {
@@ -206,6 +210,88 @@ export default function authApiRouter(io: Server) {
             });
         }
     });
-    
+
+    router.post("/forget-password", async (req, res) => {
+        const { email } = req.body;
+
+        if (!email) {
+            logger.warn("(/auth/forget-password): Invalid email format", { email });
+            return res.json({ ok: false, message: 'Invalid email format' });
+        }
+
+        try {
+            const resetToken = await forgetPassword(email);
+
+            // Intentionally vague to avoid email enumeration
+            if (!resetToken) {
+                logger.warn("(/auth/forget-password): Reset attempted for non-existent email", { email });
+                return res.json({ ok: true, message: "If the email exists, reset instructions have been sent." });
+            }
+
+            const resetUrl = `${req.protocol}://${req.get("host")}/api/auth/reset-password/${resetToken.resetToken}`;
+            const body = ` <p>You requested a password reset. Click below to reset:</p>
+                               <p><a href="${resetUrl}">${resetUrl}</a></p>
+                               <p>If you did not request this, please ignore this email.</p>
+                             `;
+
+            const transport = nodemailer.createTransport({
+                host: "sandbox.smtp.mailtrap.io",
+                port: 2525,
+                auth: {
+                    user: process.env.EMAIL_USER,
+                    pass: process.env.EMAIL_PASS,
+                },
+            });
+
+            await transport.sendMail({
+                to: email,
+                from: "noreply@noteroom.com",
+                subject: "Password Reset Request",
+                html: body,
+            });
+
+            logger.info("(/auth/forget-password): Password reset email sent", { email });
+            return res.status(200).json({ ok: true, message: "Reset instructions have been sent." });
+        } catch (error) {
+            logger.error("(/auth/forget-password): Error sending reset email", { error: error.message });
+            return res.json({
+                ok: false,
+                message: "Something went wrong. Please try again later.",
+            });
+        }
+    }
+    );
+
+    router.post("/reset-password/:resetToken", async (req, res) => {
+        try {
+            const resetToken = req.params.resetToken;
+            const hashedToken = crypto.createHash("sha256").update(resetToken).digest("hex");
+
+            const user = await getUser(hashedToken);
+
+            if (!user || !user.user || new Date(user.user.passwordResetExpires).getTime() < Date.now()) {
+                logger.warn("(/auth/reset-password): Invalid or expired token", { token: resetToken });
+                return res.json({ ok: false, message: "Token is invalid or has expired." });
+            }
+
+            user.user.password = req.body.password;
+            user.user.passwordResetToken = undefined;
+            user.user.passwordResetExpires = undefined;
+
+            await user.user.save({ validateBeforeSave: false });
+
+            logger.info("(/auth/reset-password): Password reset successful", { userId: user.user.id });
+            return res.status(200).json({ ok: true, message: "Password has been reset successfully." });
+        } catch (error) {
+            logger.error("(/auth/reset-password): Failed to reset password", { error: error.message });
+            return res.json({
+                ok: false,
+                message: "Something went wrong while resetting the password.",
+            });
+        }
+    }
+    );
+
+
     return router
 }
