@@ -29,15 +29,14 @@ export const FeedNoteContext = createContext<FeedContextType | null>(null)
 export default function FeedNotesProvider({ children }: { children: ReactNode | ReactNode[] }) {
     const [feedNotes, dispatch] = useReducer(feedReducer, [])
     const [loading, setLodaing] = useState<boolean>(true)
-    const [page, setPage] = useState<number>(1)
     const [hasMore, setHasMore] = useState<boolean>(true)
-    const { toast: [toast, setToast] } = useGlobalComponentController()!
+    const { toast: [, setToast] } = useGlobalComponentController()!
     const { savedNotes: [, setSavedNotes] } = useAppData()!
     const [seed, setSeed] = useState<number>()
     const pageRef = useRef<number>(1)
 
     const { fetchMore } = useQuery(getPostsByPage, {
-        variables: { page: pageRef.current, seed: 675137862 },
+        variables: { page: pageRef.current, seed },
         onCompleted: (data) => {
             setLodaing(false)
             if (data && data.posts && data.posts.length !== 0) {
@@ -62,7 +61,7 @@ export default function FeedNotesProvider({ children }: { children: ReactNode | 
             if (entries[0].isIntersecting && hasMore) {
                 setLodaing(true)
                 pageRef.current = pageRef.current + 1
-                await fetchMore({ variables: { page: pageRef.current, seed: 675137862 } })
+                await fetchMore({ variables: { page: pageRef.current, seed } })
             }
         })
 
@@ -152,15 +151,13 @@ export default function FeedNotesProvider({ children }: { children: ReactNode | 
         }
     }
 
-    // useEffect(() => {
-    //     const now = new Date();
-    //     const baseSeed = Math.floor(now.getTime());
-    //     const salt = now.getMinutes() * 31 + now.getSeconds(); 
-    //     const seed = ((baseSeed + salt) * 104729) % 999999937;
-    //     setSeed(seed)
-
-    //     // fetchNotes(675137862)
-    // }, [])
+    useEffect(() => {
+        const now = new Date();
+        const baseSeed = Math.floor(now.getTime());
+        const salt = now.getMinutes() * 31 + now.getSeconds(); 
+        const seed = ((baseSeed + salt) * 104729) % 999999937;
+        setSeed(seed)
+    }, [])
 
     return (
         <FeedNoteContext.Provider value={{ feedNotes, loading, lastNoteRef, dispatch, FeedActions, controller: [upvoteNote, saveNote, download] }}>
