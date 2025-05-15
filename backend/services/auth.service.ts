@@ -73,7 +73,28 @@ export async function getUser(hashToken: any) {
             passwordResetToken: hashToken,
             passwordResetExpires: { $gt: Date.now() }
         })
-        return { ok: true, user }
+        return { ok: true, studentID: user.studentID, passwordResetExpires: user.passwordResetExpires }
+    } catch (error) {
+        return { ok: false, error: error }
+    }
+}
+
+export async function resetPassword(studentID: any, password: any) {
+    try {
+        await Students.updateOne(
+            { studentID: studentID },
+            {
+                $set: {
+                    password: password,
+                },
+                $unset: {
+                    passwordResetToken: "",
+                    passwordResetExpires: "",
+                }
+            }
+        );
+
+        return { ok: true }
     } catch (error) {
         return { ok: false, error: error }
     }

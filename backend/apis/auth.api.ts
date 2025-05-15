@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { Server } from 'socket.io';
 import { OAuth2Client } from 'google-auth-library';
-import { addUserProfile, getUserAuth, getUserVarification, forgetPassword, getUser } from '../services/auth.service';
+import { addUserProfile, getUserAuth, getUserVarification, forgetPassword, getUser, resetPassword } from '../services/auth.service';
 import { generateRandomUsername } from '../services/utils';
 import { capitalize, sample } from "lodash"
 import logger from '../logger';
@@ -265,22 +265,24 @@ export default function authApiRouter(io: Server) {
     router.post("/reset-password/:resetToken", async (req, res) => {
         try {
             const resetToken = req.params.resetToken;
+            const password = req.body.password;
             const hashedToken = crypto.createHash("sha256").update(resetToken).digest("hex");
 
             const user = await getUser(hashedToken);
 
-            if (!user || !user.user || new Date(user.user.passwordResetExpires).getTime() < Date.now()) {
+            if (!user || !user.studentID || new Date(user.passwordResetExpires).getTime() < Date.now()) {
                 logger.warn("(/auth/reset-password): Invalid or expired token", { token: resetToken });
                 return res.json({ ok: false, message: "Token is invalid or has expired." });
             }
 
-            user.user.password = req.body.password;
-            user.user.passwordResetToken = undefined;
-            user.user.passwordResetExpires = undefined;
+            const updateUser = await resetPassword(user.studentID, password);
 
-            await user.user.save({ validateBeforeSave: false });
+            if (!updateUser.ok) {
+                logger.warn("(/auth/reset-password): Password hasn't updated", { user: user.studentID });
+                return res.json({ ok: false, message: "Password hasn't updated." });
+            }
 
-            logger.info("(/auth/reset-password): Password reset successful", { userId: user.user.id });
+            logger.info("(/auth/reset-password): Password reset successful", { studentID: user.studentID });
             return res.status(200).json({ ok: true, message: "Password has been reset successfully." });
         } catch (error) {
             logger.error("(/auth/reset-password): Failed to reset password", { error: error.message });
