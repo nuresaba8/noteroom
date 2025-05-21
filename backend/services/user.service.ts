@@ -1,5 +1,7 @@
 import Students from "../schemas/users.model"
 import mongoose from "mongoose"
+import { v4 as uuidv4 } from "uuid"
+import { generateRandomUsername } from "./utils"
 
 export const Convert = {
     async getStudentID_username(username: string) {
@@ -160,8 +162,16 @@ export async function searchStudent(searchTerm: string, options?: any) {
 }
 
 export async function updateProfileFields(studentID: string, updates: Record<string, string>) {
-    //TODO: add profile picture change logic (@rafi)
+    //TODO: add profile picture change logic
+
     try {
+        if (Object.keys(updates).includes("displayname")) {
+            const response = generateRandomUsername(updates.displayname, true)
+            const currentUsername = await Convert.getUserName_studentid(studentID)
+            const randomPortion = currentUsername.split("-").pop()
+            const username = `${response.username}-${randomPortion || uuidv4().split("-")[0]}`
+            updates.username = username
+        }
         await Students.updateOne({ studentID: studentID }, updates);
         return { ok: true }
     } catch (error) {
