@@ -3,9 +3,11 @@ import { Server } from "socket.io";
 import { Convert, getMutualCollegeStudents, getProfile, updateProfileFields } from "../services/user.service";
 import sanitizeHtml from 'sanitize-html';
 import logger from "../logger";
+import validator from "validator";
 
 const router = Router()
 export const ALLOWED_CHANGEABLE_FIELDS = [
+	"username",
 	"displayname",
 	"bio",
 	"rollnumber",
@@ -14,6 +16,20 @@ export const ALLOWED_CHANGEABLE_FIELDS = [
 	"group",
 	"collegeyear"
 ]
+
+function isValidUsername(username: string): boolean {
+	// Must be at least 4 characters
+	if (username.length < 4) return false;
+
+	// Must be all ASCII characters
+	if (!validator.isAscii(username)) return false;
+
+	// Only allow letters, digits, ., _, -, but not at the start or end
+	// Start and end must be alphanumeric
+	const regex = /^[a-zA-Z0-9](?:[a-zA-Z0-9._-]*[a-zA-Z0-9])?$/;
+	return regex.test(username);
+}
+
 
 export default function profileApiRouter(io: Server) {
 	router.get("/mutual-college", async (req, res) => {
@@ -60,17 +76,17 @@ export default function profileApiRouter(io: Server) {
 
 	router.post("/change", async (req, res: any) => {
 		try {
-			const studentID = req.session?.["stdid"];
-			if (!studentID) return
+			const studentID = req.session["stdid"];
+			if (!studentID) return;
 
-			// Check group from request body
 			const group = req.body.group?.trim();
-			if (!group || !["Science", "Commerce", "Arts"].includes(group)) {
-				logger.warn(`Invalid or missing group for student ${studentID}: ${group}`);
-				return res.json({ ok: false, message: "Invalid or missing group." });
-			}
+			if (group) {
+				if (!["Science", "Commerce", "Arts"].includes(group)) {
+					logger.warn(`Invalid or missing group for student ${studentID}: ${group}`);
+					return res.json({ ok: false, message: "Invalid or missing group." });
+				}
 
-			logger.info(`Student ID: ${studentID}, Group: ${group}`);
+			}
 
 			const updates: Record<string, string> = {};
 
@@ -87,6 +103,16 @@ export default function profileApiRouter(io: Server) {
 					logger.warn(`Empty value submitted for "${key}" by student ${studentID}`);
 					return res.json({ ok: false, message: `Value for "${key}" cannot be empty.` });
 				}
+
+				if (key === "username" && !isValidUsername(value)) {
+					logger.warn(`Invalid username attempt by student ${studentID}: "${value}"`);
+					return res.json({
+						ok: false,
+						message:
+							"Invalid username. Use only letters, numbers, dot (.), underscore (_) or dash (-). It must be at least 4 characters long and cannot start or end with punctuation."
+					});
+				}
+
 
 				updates[key] = value;
 			}
