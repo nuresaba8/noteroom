@@ -1,4 +1,6 @@
 import { Schema, model } from 'mongoose'
+import { userMentionMap } from '../services/utils'
+import studentsModel from './users.model'
 
 const baseOptions = {
     discriminatorKey: 'docType',
@@ -20,6 +22,33 @@ const CommentsSchema = new Schema({
         default: Date.now
     }
 }, baseOptions)
+
+CommentsSchema.pre('save', async function(next) {
+    try {
+        if (this.feedbackContents && this.feedbackContents.trim().length !== 0) {
+            const tokenize = await userMentionMap.tokenize(this.feedbackContents, studentsModel)
+            this.feedbackContents = tokenize
+        }
+    } catch (error) {
+        console.error(error)   
+    } finally {
+        next()
+    }
+})
+
+CommentsSchema.post('aggregate', async function (docs) {
+    try {
+        for (const doc of docs) {
+            if (doc.length !== 0) {
+                const unparsedFeedbackText = doc.feedbackContents
+                doc.feedbackContents = await userMentionMap.parse(unparsedFeedbackText, studentsModel)
+            }
+        }
+    } catch (error) {
+        console.error(error)
+    }
+})
+
 const CommentsModel = model('comments', CommentsSchema)
 
 

@@ -3,6 +3,8 @@ import { isCommentUpVoted } from "./vote.service"
 import Notes from "../schemas/posts.model"
 import mongoose from "mongoose"
 import notesModel from "../schemas/posts.model"
+import { userMentionMap } from "./utils"
+import studentsModel from "../schemas/users.model"
 
 //DEPRECATED
 // export async function getComments({ noteDocID, studentDocID }) {
@@ -94,8 +96,9 @@ export async function getReplies(parentFeedbackDocID: string) {
 export async function addFeedback(feedbackData: any) {
     try {
         await Notes.findByIdAndUpdate(feedbackData.noteDocID, { $inc: { feedbackCount: 1 } })
-        let feedbackDoc = await Comments.create(feedbackData)
-        let feedback = await Comments.findById(feedbackDoc._id)
+        const feedbackDoc = await Comments.create(feedbackData)
+        const feedbackContents = await userMentionMap.parse(feedbackDoc["feedbackContents"], studentsModel)
+        const feedback = await Comments.findById(feedbackDoc._id)
             .populate('commenterDocID', 'displayname username studentID profile_pic')
             .populate({
                 path: 'noteDocID',
@@ -107,8 +110,7 @@ export async function addFeedback(feedbackData: any) {
             })
 
         if (!feedback) return { ok: false }
-
-        const extendedFeedback = { ...feedback.toObject(), commenter: feedback?.["commenterDocID"] }
+        const extendedFeedback = { ...feedback.toObject(), feedbackContents, commenter: feedback?.["commenterDocID"],  }
         return { ok: true, feedback: extendedFeedback }
     } catch (error) {
         return { ok: false, error: error }
@@ -120,8 +122,9 @@ export async function addReply(replyData: any) {
     try {
         await Notes.findByIdAndUpdate(replyData.noteDocID, { $inc: { feedbackCount: 1 } })
         await Comments.findByIdAndUpdate(replyData.parentFeedbackDocID, { $inc: { replyCount: 1 } })
-        let replyDoc = await Reply.create(replyData)
-        let reply = await Reply.findById(replyDoc._id)
+        const replyDoc = await Reply.create(replyData)
+        const replyContents = await userMentionMap.parse(replyDoc["feedbackContents"], studentsModel)
+        const reply = await Reply.findById(replyDoc._id)
             .populate('commenterDocID', 'displayname username studentID profile_pic')
             .populate({
                 path: 'parentFeedbackDocID',
@@ -133,8 +136,7 @@ export async function addReply(replyData: any) {
             })
             .populate('noteDocID', 'title postType')
 
-        const extentedReply = { ...reply.toObject(), replier: reply?.["commenterDocID"] }
-
+        const extentedReply = { ...reply.toObject(), feedbackContents: replyContents, replier: reply?.["commenterDocID"] }
         return { ok: true, reply: extentedReply }
     } catch (error) {
         return { ok: false }
