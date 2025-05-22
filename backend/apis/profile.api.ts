@@ -5,6 +5,10 @@ import sanitizeHtml from 'sanitize-html';
 import logger from "../logger";
 import validator from "validator";
 
+const FeatureFlags = {
+	ACCEPT_USERNAME_CHANGE_VIA_API: false
+}
+
 const router = Router()
 export const ALLOWED_CHANGEABLE_FIELDS = [
 	"username",
@@ -14,18 +18,15 @@ export const ALLOWED_CHANGEABLE_FIELDS = [
 	"favouritesubject",
 	"notfavsubject",
 	"group",
-	"collegeyear"
+	"collegeyear",
+	...[FeatureFlags.ACCEPT_USERNAME_CHANGE_VIA_API && "username"]
 ]
 
 function isValidUsername(username: string): boolean {
-	// Must be at least 4 characters
 	if (username.length < 4) return false;
 
-	// Must be all ASCII characters
 	if (!validator.isAscii(username)) return false;
 
-	// Only allow letters, digits, ., _, -, but not at the start or end
-	// Start and end must be alphanumeric
 	const regex = /^[a-zA-Z0-9](?:[a-zA-Z0-9._-]*[a-zA-Z0-9])?$/;
 	return regex.test(username);
 }
@@ -104,7 +105,7 @@ export default function profileApiRouter(io: Server) {
 					return res.json({ ok: false, message: `Value for "${key}" cannot be empty.` });
 				}
 
-				if (key === "username" && !isValidUsername(value)) {
+				if (FeatureFlags.ACCEPT_USERNAME_CHANGE_VIA_API && key === "username" && !isValidUsername(value)) {
 					logger.warn(`Invalid username attempt by student ${studentID}: "${value}"`);
 					return res.json({
 						ok: false,
@@ -128,6 +129,9 @@ export default function profileApiRouter(io: Server) {
 				res.json({ ok: true });
 			} else {
 				logger.error(`Update failed for student ${studentID}`);
+				if (response.error.code && response.error.code === 11000) {
+					return res.json({ ok: false, message: "Username is not available" });
+				}
 				res.json({ ok: false, message: "Can't change your profile details now! Please try again a bit later" });
 			}
 		} catch (error) {

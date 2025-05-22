@@ -55,21 +55,28 @@ export async function processBuikPDFUpload(fileObjects: fileUpload.UploadedFile[
 }
 
 
-export function generateRandomUsername(displayname: string) {
-    let sluggfied = slugify(displayname, {
-        lower: true,
-        strict: true
-    })
-    let uuid = uuidv4()
-    let suffix = uuid.split("-")[0]
-    let username = `${sluggfied}-${suffix}`
+type UserInfo = { userID?: string, username?: string }
+export function generateRandomUsername(displayname: string, onlyTextPortion: boolean = false): UserInfo  {
+    const uuid = uuidv4()
+    const suffix = uuid.split("-")[0]
 
-    return {
-        userID: uuid,
-        username: username
+    try {
+        let username: string = ""
+        const normalizedDisplayName = displayname.normalize("NFKD").replace(/[\u0300-\u036f]/g, "")
+        const sluggfied = slugify(normalizedDisplayName, { lower: true, strict: true })
+
+        if (sluggfied.trim().length !== 0) {
+            username = onlyTextPortion ? sluggfied : `${sluggfied}-${suffix}`
+        } else {
+            const textPortion = displayname.toLowerCase().replace(/\s+/g, "-")
+            username = onlyTextPortion ? textPortion : `${textPortion}-${suffix}`
+        }
+
+        return { userID: uuid, username: username }
+    } catch (error) {
+        return { userID: uuid, username: onlyTextPortion ? `nr-user` : `nr-user-${suffix}` }
     }
 }
-
 
 export const userMentionMap = {
     mentionRegex: /(\@[\w+\-]+)/,
