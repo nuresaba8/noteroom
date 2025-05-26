@@ -30,6 +30,7 @@ import mcqApiRouter from './apis/mcq.api';
 import friendsApiRouter from './apis/friends.api';
 import resolvers from './graphql/resolvers/index.resolver'
 import typeDefs from './graphql/typeDefs/index.typeDef'
+import spacesApiRouter from './apis/spaces.api';
 
 config({ path: join(__dirname, '.env') });
 
@@ -102,6 +103,7 @@ app.use('/api/auth', authApiRouter(io))
 app.use('/api/upload', uploadApiRouter(io))
 app.use('/api/mcq/', mcqApiRouter(io))
 app.use('/api/friends', friendsApiRouter(io))
+app.use('/api/spaces', spacesApiRouter(io))
 
 app.get('/logout', (req, res) => {
     try {
